@@ -7,7 +7,10 @@ use tray_icon::menu::{Menu, MenuItem, MenuEvent};
 use std::env;
 use std::sync::mpsc::{self, Sender, Receiver};
 
-// Windows注册表相关的导入暂时简化
+#[cfg(windows)]
+use winreg::enums::*;
+#[cfg(windows)]
+use winreg::RegKey;
 
 // 托盘消息类型
 #[derive(Debug, Clone)]
@@ -543,23 +546,119 @@ use tray_icon::TrayIconBuilder;
 // 开机自启相关函数
 #[cfg(windows)]
 fn check_auto_start() -> bool {
-    // 这里应该检查注册表，简化实现总是返回false
-    false
+    const REG_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+    const APP_NAME: &str = "RestReminder";
+
+    match RegKey::predef(HKEY_CURRENT_USER).open_subkey(REG_KEY) {
+        Ok(key) => {
+            match key.get_value::<String, _>(APP_NAME) {
+                Ok(_) => true,
+                Err(_) => false,
+            }
+        }
+        Err(_) => false,
+    }
 }
 
 #[cfg(windows)]
 fn toggle_auto_start(enable: bool) -> Result<(), Box<dyn std::error::Error>> {
+    const REG_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+    const APP_NAME: &str = "RestReminder";
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let path = std::path::Path::new(REG_KEY);
+
     if enable {
         // 获取当前程序路径
         let current_exe = env::current_exe()?;
-        let _path_str = current_exe.to_string_lossy();
+        let path_str = current_exe.to_string_lossy().to_string();
 
-        // 这里应该添加到Windows启动文件夹或注册表
-        // 简化实现，实际项目中需要完整的注册表操作
+        // 打开或创建注册表项，并设置值
+        match hkcu.create_subkey(path) {
+            Ok((key, _disp)) => {
+                key.set_value(APP_NAME, &path_str)?;
+                println!("开机自启已启用: {}", path_str);
+            }
+            Err(e) => {
+                return Err(format!("无法创建注册表项: {}", e).into());
+            }
+        }
     } else {
         // 移除开机自启
+        match hkcu.open_subkey_with_flags(path, KEY_ALL_ACCESS) {
+            Ok(key) => {
+                match key.delete_value(APP_NAME) {
+                    Ok(_) => println!("开机自启已禁用"),
+                    Err(e) => {
+                        // 如果值不存在，也算是禁用成功
+                        if e.raw_os_error() == Some(2) { // ERROR_FILE_NOT_FOUND
+                            println!("开机自启已禁用（值不存在）");
+                        } else {
+                            return Err(format!("无法删除注册表值: {}", e).into());
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                // 如果注册表项不存在，也算是禁用成功
+                println!("开机自启已禁用（注册表项不存在）");
+            }
+        }
     }
+
     Ok(())
+}
+
+#[cfg(windows)]
+fn get_auto_start_path() -> Result<String, Box<dyn std::error::Error>> {
+    const REG_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+    const APP_NAME: &str = "RestReminder";
+
+    match RegKey::predef(HKEY_CURRENT_USER).open_subkey(REG_KEY) {
+        Ok(key) => {
+            match key.get_value::<String, _>(APP_NAME) {
+                Ok(path) => Ok(path),
+                Err(_) => Err("注册表中未找到自启动项".into()),
+            }
+        }
+        Err(e) => Err(format!("无法打开注册表项: {}", e).into()),
+    }
+}
+
+#[cfg(windows)]
+fn is_admin() -> bool {
+    use winapi::um::securitybaseapi::GetTokenInformation;
+    use winapi::um::processthreadsapi::GetCurrentProcess;
+    use winapi::um::winnt::{TOKEN_QUERY, TokenElevation, TOKEN_ELEVATION, HANDLE};
+    use std::ptr;
+
+    unsafe {
+        let mut token: HANDLE = ptr::null_mut();
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut size = std::mem::size_of::<TOKEN_ELEVATION>() as u32;
+
+        // 获取当前进程令牌
+        if winapi::um::processthreadsapi::OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_QUERY,
+            &mut token,
+        ) == 0 {
+            return false;
+        }
+
+        // 获取令牌提升信息
+        let result = GetTokenInformation(
+            token,
+            TokenElevation,
+            &mut elevation as *mut _ as *mut _,
+            size,
+            &mut size,
+        );
+
+        winapi::um::handleapi::CloseHandle(token);
+
+        result != 0 && elevation.TokenIsElevated != 0
+    }
 }
 
 #[cfg(not(windows))]

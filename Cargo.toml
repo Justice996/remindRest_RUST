@@ -17,6 +17,7 @@ eframe = { version = "0.28", default-features = false, features = [
 ] }
 serde = { version = "1.0", features = ["derive"] }
 chrono = "0.4"
-winapi = { version = "0.3", features = ["winuser", "wincon", "winreg"] }
+winapi = { version = "0.3", features = ["winuser", "wincon", "winreg", "securitybaseapi", "processthreadsapi", "winnt", "handleapi"] }
+winreg = "0.52"
 tray-icon = "0.14"
 winit = "0.29"
